@@ -1,0 +1,29 @@
+{
+  "name": "claude-model-benchmark",
+  "version": "1.0.0",
+  "description": "Benchmark Claude models side-by-side — latency, token usage, quality scoring across prompts",
+  "main": "dist/index.js",
+  "bin": {
+    "claude-model-benchmark": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "node --test src/__tests__/index.test.mjs"
+  },
+  "keywords": [
+    "claude",
+    "benchmark",
+    "anthropic",
+    "llm",
+    "model",
+    "comparison",
+    "latency"
+  ],
+  "author": "HomenShum",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^25.2.1",
+    "typescript": "^5.4.0"
+  }
+}
