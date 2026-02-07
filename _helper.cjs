@@ -1,0 +1,1 @@
+const fs=require("fs"); const args=process.argv.slice(2); const file=args[0]; const content=fs.readFileSync("/dev/stdin","utf-8"); if(args[1]==="append"){fs.appendFileSync(file,content)}else{fs.writeFileSync(file,content)} console.log("wrote",content.length,"bytes to",file)

@@ -125,13 +125,13 @@ Compare Options:
 
 Environment (BYOK):
   ANTHROPIC_API_KEY   Claude Haiku 4.5, Sonnet 4.5, Opus 4.6
-  OPENAI_API_KEY      GPT-4o Mini, GPT-4o, o3-mini
-  GEMINI_API_KEY      Gemini 2.0 Flash, Gemini 2.5 Pro
+  OPENAI_API_KEY      GPT-5 Mini, GPT-5, GPT-5.2
+  GEMINI_API_KEY      Gemini 3 Flash, Gemini 3 Pro
 
 Examples:
   claude-model-benchmark agent
   claude-model-benchmark agent --goal "Compare reasoning ability"
-  claude-model-benchmark compare haiku gpt-4o-mini
+  claude-model-benchmark compare haiku gpt-5-mini
   claude-model-benchmark run --providers anthropic,openai
   claude-model-benchmark dry-run
   claude-model-benchmark providers`);

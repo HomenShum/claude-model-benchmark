@@ -50,15 +50,15 @@ describe("PROVIDERS catalog", () => {
     assert.equal(PROVIDERS.gemini.name, "Google");
   });
 
-  it("should have exactly 5 models total across all providers", () => {
+  it("should have exactly 8 models total across all providers", () => {
     const total = Object.values(PROVIDERS).reduce((n, cfg) => n + cfg.models.length, 0);
-    assert.equal(total, 5, `Expected 5 total models, got ${total}`);
+    assert.equal(total, 8, `Expected 8 total models, got ${total}`);
   });
 
-  it("should have Gemini 2.0 Flash as free (zero cost)", () => {
+  it("should have Gemini 3 Flash as lowest cost", () => {
     const gemini = PROVIDERS.gemini.models[0];
-    assert.equal(gemini.inputCost, 0);
-    assert.equal(gemini.outputCost, 0);
+    assert.equal(gemini.inputCost, 0.0005);
+    assert.equal(gemini.outputCost, 0.003);
   });
 });
 
@@ -110,7 +110,7 @@ describe("getAvailableProviders", () => {
 describe("getAllModels", () => {
   it("should return all models across all providers", () => {
     const all = getAllModels();
-    assert.ok(all.length >= 5, `Expected at least 5 models, got ${all.length}`);
+    assert.ok(all.length >= 8, `Expected at least 8 models, got ${all.length}`);
     const providers = [...new Set(all.map((m) => m.provider))];
     assert.ok(providers.includes("anthropic"));
     assert.ok(providers.includes("openai"));
@@ -120,7 +120,7 @@ describe("getAllModels", () => {
   it("should filter by single provider", () => {
     const anthropicOnly = getAllModels(["anthropic"]);
     assert.ok(anthropicOnly.every((m) => m.provider === "anthropic"));
-    assert.ok(anthropicOnly.length >= 2);
+    assert.ok(anthropicOnly.length >= 3, `Expected at least 3 Anthropic models, got ${anthropicOnly.length}`);
   });
 
   it("should filter by multiple providers", () => {
@@ -159,28 +159,25 @@ describe("resolveModel", () => {
   });
 
   it("should resolve OpenAI model by id", () => {
-    const m = resolveModel("gpt-4o-mini");
-    assert.ok(m, "Should resolve gpt-4o-mini");
+    const m = resolveModel("gpt-5-mini");
+    assert.ok(m, "Should resolve gpt-5-mini");
     assert.equal(m.provider, "openai");
-    assert.equal(m.label, "GPT-4o Mini");
+    assert.equal(m.label, "GPT-5 Mini");
   });
 
-  it("should resolve GPT-4o by exact full id", () => {
-    // Note: "gpt-4o" is a prefix of "gpt-4o-mini", so resolveModel
-    // may match gpt-4o-mini first. Use the more specific query.
-    const m = resolveModel("GPT-4o");
-    assert.ok(m, "Should resolve GPT-4o");
+  it("should resolve GPT-5 by exact full id", () => {
+    const m = resolveModel("gpt-5");
+    assert.ok(m, "Should resolve gpt-5");
     assert.equal(m.provider, "openai");
-    // Either GPT-4o or GPT-4o Mini is acceptable since "GPT-4o" is a prefix of both labels
     assert.ok(
-      m.label === "GPT-4o" || m.label === "GPT-4o Mini",
-      `Expected GPT-4o or GPT-4o Mini, got ${m.label}`
+      m.label === "GPT-5" || m.label === "GPT-5 Mini",
+      `Expected GPT-5 or GPT-5 Mini, got ${m.label}`
     );
   });
 
   it("should resolve Gemini model by id", () => {
-    const m = resolveModel("gemini-2.0-flash");
-    assert.ok(m, "Should resolve gemini-2.0-flash");
+    const m = resolveModel("gemini-3-flash-preview");
+    assert.ok(m, "Should resolve gemini-3-flash-preview");
     assert.equal(m.provider, "gemini");
     assert.equal(m.providerName, "Google");
   });
@@ -194,6 +191,30 @@ describe("resolveModel", () => {
     const m = resolveModel("HAIKU");
     assert.ok(m, "Should resolve HAIKU (case-insensitive)");
     assert.equal(m.provider, "anthropic");
+  });
+
+  it("should resolve Opus 4.6 by label prefix", () => {
+    const m = resolveModel("opus");
+    assert.ok(m, "Should resolve opus");
+    assert.equal(m.provider, "anthropic");
+    assert.equal(m.label, "Opus 4.6");
+    assert.equal(m.id, "claude-opus-4-6");
+  });
+
+  it("should resolve GPT-5.2 by id", () => {
+    const m = resolveModel("gpt-5.2");
+    assert.ok(m, "Should resolve gpt-5.2");
+    assert.equal(m.provider, "openai");
+    assert.equal(m.label, "GPT-5.2");
+    assert.equal(m.id, "gpt-5.2");
+  });
+
+  it("should resolve Gemini 3 Pro by label prefix", () => {
+    const m = resolveModel("gemini-3-pro");
+    assert.ok(m, "Should resolve gemini-3-pro");
+    assert.equal(m.provider, "gemini");
+    assert.equal(m.label, "Gemini 3 Pro");
+    assert.equal(m.id, "gemini-3-pro-preview");
   });
 });
 
@@ -279,9 +300,12 @@ describe("generateDryRunReport", () => {
     const report = generateDryRunReport();
     assert.ok(report.markdown.includes("Haiku 4.5"), "Missing Haiku 4.5");
     assert.ok(report.markdown.includes("Sonnet 4.5"), "Missing Sonnet 4.5");
-    assert.ok(report.markdown.includes("GPT-4o Mini"), "Missing GPT-4o Mini");
-    assert.ok(report.markdown.includes("GPT-4o"), "Missing GPT-4o");
-    assert.ok(report.markdown.includes("Gemini 2.0 Flash"), "Missing Gemini 2.0 Flash");
+    assert.ok(report.markdown.includes("Opus 4.6"), "Missing Opus 4.6");
+    assert.ok(report.markdown.includes("GPT-5 Mini"), "Missing GPT-5 Mini");
+    assert.ok(report.markdown.includes("GPT-5"), "Missing GPT-5");
+    assert.ok(report.markdown.includes("GPT-5.2"), "Missing GPT-5.2");
+    assert.ok(report.markdown.includes("Gemini 3 Flash"), "Missing Gemini 3 Flash");
+    assert.ok(report.markdown.includes("Gemini 3 Pro"), "Missing Gemini 3 Pro");
   });
 
   it("should include all provider names", () => {
@@ -372,25 +396,25 @@ describe("generateReport with cross-provider data", () => {
           costUsd: 0.000055,
         },
         {
-          model: "GPT-4o Mini",
-          modelId: "gpt-4o-mini",
+          model: "GPT-5 Mini",
+          modelId: "gpt-5-mini",
           provider: "OpenAI",
           prompt: "Hello",
           promptName: "greeting",
           response: "Hello!",
-          latencyMs: 180,
+          latencyMs: 150,
           inputTokens: 5,
           outputTokens: 8,
           costUsd: 0.000006,
         },
         {
-          model: "Gemini 2.0 Flash",
-          modelId: "gemini-2.0-flash",
+          model: "Gemini 3 Flash",
+          modelId: "gemini-3-flash-preview",
           provider: "Google",
           prompt: "Hello",
           promptName: "greeting",
           response: "Hi!",
-          latencyMs: 150,
+          latencyMs: 130,
           inputTokens: 5,
           outputTokens: 6,
           costUsd: 0,
@@ -398,13 +422,13 @@ describe("generateReport with cross-provider data", () => {
       ],
       stats: [
         {
-          model: "Gemini 2.0 Flash",
+          model: "Gemini 3 Flash",
           provider: "Google",
           totalRuns: 1,
-          avgLatencyMs: 150,
-          p50LatencyMs: 150,
-          p95LatencyMs: 150,
-          p99LatencyMs: 150,
+          avgLatencyMs: 130,
+          p50LatencyMs: 130,
+          p95LatencyMs: 130,
+          p99LatencyMs: 130,
           avgInputTokens: 5,
           avgOutputTokens: 6,
           totalCostUsd: 0,
@@ -412,13 +436,13 @@ describe("generateReport with cross-provider data", () => {
           errorRate: 0,
         },
         {
-          model: "GPT-4o Mini",
+          model: "GPT-5 Mini",
           provider: "OpenAI",
           totalRuns: 1,
-          avgLatencyMs: 180,
-          p50LatencyMs: 180,
-          p95LatencyMs: 180,
-          p99LatencyMs: 180,
+          avgLatencyMs: 150,
+          p50LatencyMs: 150,
+          p95LatencyMs: 150,
+          p99LatencyMs: 150,
           avgInputTokens: 5,
           avgOutputTokens: 8,
           totalCostUsd: 0.000006,
@@ -440,14 +464,14 @@ describe("generateReport with cross-provider data", () => {
           errorRate: 0,
         },
       ],
-      models: ["Haiku 4.5", "GPT-4o Mini", "Gemini 2.0 Flash"],
+      models: ["Haiku 4.5", "GPT-5 Mini", "Gemini 3 Flash"],
       providers: ["Anthropic", "OpenAI", "Google"],
       promptCount: 1,
       winner: {
-        fastest: "Gemini 2.0 Flash (gemini)",
-        cheapest: "Gemini 2.0 Flash (gemini)",
-        bestValue: "Gemini 2.0 Flash (gemini)",
-        summary: "Fastest: Gemini 2.0 Flash at 150ms avg. Cheapest: Gemini 2.0 Flash at $0.0000. Best value: Gemini 2.0 Flash.",
+        fastest: "Gemini 3 Flash (gemini)",
+        cheapest: "Gemini 3 Flash (gemini)",
+        bestValue: "Gemini 3 Flash (gemini)",
+        summary: "Fastest: Gemini 3 Flash at 130ms avg. Cheapest: Gemini 3 Flash at $0.0000. Best value: Gemini 3 Flash.",
       },
     };
     const report = generateReport(data);
@@ -455,10 +479,10 @@ describe("generateReport with cross-provider data", () => {
     assert.ok(report.markdown.includes("OpenAI"));
     assert.ok(report.markdown.includes("Google"));
     assert.ok(report.markdown.includes("Haiku 4.5"));
-    assert.ok(report.markdown.includes("GPT-4o Mini"));
-    assert.ok(report.markdown.includes("Gemini 2.0 Flash"));
+    assert.ok(report.markdown.includes("GPT-5 Mini"));
+    assert.ok(report.markdown.includes("Gemini 3 Flash"));
     assert.ok(report.markdown.includes("Recommendation"));
-    assert.ok(report.summary.includes("Gemini 2.0 Flash"));
+    assert.ok(report.summary.includes("Gemini 3 Flash"));
   });
 
   it("should show error results with provider context", () => {
@@ -466,8 +490,8 @@ describe("generateReport with cross-provider data", () => {
       timestamp: "2026-02-06T00:00:00Z",
       results: [
         {
-          model: "GPT-4o",
-          modelId: "gpt-4o",
+          model: "GPT-5",
+          modelId: "gpt-5",
           provider: "OpenAI",
           prompt: "Hello",
           promptName: "test",
@@ -481,7 +505,7 @@ describe("generateReport with cross-provider data", () => {
       ],
       stats: [
         {
-          model: "GPT-4o",
+          model: "GPT-5",
           provider: "OpenAI",
           totalRuns: 1,
           avgLatencyMs: 0,
@@ -495,7 +519,7 @@ describe("generateReport with cross-provider data", () => {
           errorRate: 1,
         },
       ],
-      models: ["GPT-4o"],
+      models: ["GPT-5"],
       providers: ["OpenAI"],
       promptCount: 1,
     };
@@ -551,11 +575,11 @@ describe("DEFAULT_PROMPTS", () => {
 describe("Winner determination", () => {
   it("should pick fastest model correctly from stats", () => {
     const report = generateDryRunReport();
-    // Gemini 2.0 Flash should be fastest (lowest latency profile: base 150ms)
+    // Gemini 3 Flash should be fastest (lowest latency profile: base 130ms)
     // The winner section should mention it
     assert.ok(
-      report.markdown.includes("Gemini 2.0 Flash") ||
-      report.markdown.includes("GPT-4o Mini"),
+      report.markdown.includes("Gemini 3 Flash") ||
+      report.markdown.includes("GPT-5 Mini"),
       "Winner should be one of the fast models"
     );
   });

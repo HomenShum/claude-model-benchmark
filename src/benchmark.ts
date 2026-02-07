@@ -394,13 +394,16 @@ export function generateDryRunReport(): ReportOutput {
     anthropic: {
       "Haiku 4.5": { base: 220, variance: 80 },
       "Sonnet 4.5": { base: 520, variance: 180 },
+      "Opus 4.6": { base: 1500, variance: 1500 },
     },
     openai: {
-      "GPT-4o Mini": { base: 180, variance: 70 },
-      "GPT-4o": { base: 450, variance: 160 },
+      "GPT-5 Mini": { base: 150, variance: 60 },
+      "GPT-5": { base: 400, variance: 150 },
+      "GPT-5.2": { base: 600, variance: 300 },
     },
     gemini: {
-      "Gemini 2.0 Flash": { base: 150, variance: 60 },
+      "Gemini 3 Flash": { base: 130, variance: 50 },
+      "Gemini 3 Pro": { base: 350, variance: 350 },
     },
   };
 
