@@ -1,24 +1,33 @@
 {
   "name": "claude-model-benchmark",
-  "version": "1.0.0",
-  "description": "Benchmark Claude models side-by-side — latency, token usage, quality scoring across prompts",
+  "version": "2.0.0",
+  "description": "Benchmark LLM models across Anthropic, OpenAI, and Google — side by side. Multi-provider BYOK with cross-provider comparison reports.",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "bin": {
     "claude-model-benchmark": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "node --test src/__tests__/index.test.mjs"
+    "test": "node --test src/__tests__/index.test.mjs",
+    "dry-run": "node dist/index.js dry-run",
+    "demo": "node dist/index.js demo",
+    "providers": "node dist/index.js providers"
   },
   "keywords": [
     "claude",
     "benchmark",
     "anthropic",
+    "openai",
+    "gemini",
+    "gpt-4o",
     "llm",
     "model",
     "comparison",
-    "latency"
+    "latency",
+    "byok",
+    "multi-provider"
   ],
   "author": "HomenShum",
   "license": "MIT",

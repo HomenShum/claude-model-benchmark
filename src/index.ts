@@ -1,414 +1,337 @@
 #!/usr/bin/env node
 
 /**
- * claude-model-benchmark — Benchmark Claude models side-by-side.
+ * claude-model-benchmark — Benchmark AI models side-by-side.
+ * Claude vs GPT vs Gemini. Bring your own keys.
  *
- * Measures latency, token usage, and output quality across prompts.
+ * Multi-provider BYOK benchmarking with cross-provider comparison reports.
  */
 
-// ─── Types ──────────────────────────────────────────────────────────────────
+// ── Public API (programmatic usage) ─────────────────────────────────────────
 
-export interface PromptCase {
-  name: string;
-  prompt: string;
-  rubric?: string[];
-  maxTokens?: number;
+export {
+  runBenchmark,
+  generateReport,
+  generateDryRunReport,
+  DEFAULT_PROMPTS,
+  computeStats,
+  percentile,
+} from "./benchmark";
+export {
+  PROVIDERS,
+  getAvailableProviders,
+  getAllModels,
+  resolveModel,
+  getApiKey,
+  callProvider,
+} from "./providers";
+export type {
+  BenchmarkOptions,
+  BenchmarkResult,
+  ProviderConfig,
+  ModelDef,
+  ModelResult,
+  ModelStats,
+  PromptCase,
+  ReportOutput,
+  WinnerRecommendation,
+  ApiCallResult,
+} from "./types";
+
+// ── CLI ─────────────────────────────────────────────────────────────────────
+
+import * as benchmarkMod from "./benchmark";
+import * as providersMod from "./providers";
+import type {
+  PromptCase as PromptCaseType,
+  BenchmarkResult as BenchmarkResultType,
+} from "./types";
+
+const VERSION = "2.0.0";
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+function getArg(args: string[], flag: string): string | undefined {
+  const idx = args.indexOf(flag);
+  return idx !== -1 && args[idx + 1] ? args[idx + 1] : undefined;
 }
-
-export interface ModelResult {
-  model: string;
-  modelId: string;
-  prompt: string;
-  promptName: string;
-  response: string;
-  latencyMs: number;
-  inputTokens: number;
-  outputTokens: number;
-  costUsd: number;
-  error?: string;
-}
-
-export interface ModelStats {
-  model: string;
-  totalRuns: number;
-  avgLatencyMs: number;
-  p50LatencyMs: number;
-  p95LatencyMs: number;
-  p99LatencyMs: number;
-  avgInputTokens: number;
-  avgOutputTokens: number;
-  totalCostUsd: number;
-  errorRate: number;
-}
-
-export interface BenchmarkResult {
-  timestamp: string;
-  results: ModelResult[];
-  stats: ModelStats[];
-  models: string[];
-  promptCount: number;
-}
-
-export interface BenchmarkOptions {
-  models?: string[];
-  prompts?: PromptCase[];
-  apiKey?: string;
-  maxTokens?: number;
-}
-
-export interface ReportOutput {
-  markdown: string;
-  summary: string;
-}
-
-// ─── Model Catalog ──────────────────────────────────────────────────────────
-
-const MODEL_CATALOG: Record<string, { id: string; inputPer1k: number; outputPer1k: number }> = {
-  haiku: { id: "claude-haiku-4-5-20251001", inputPer1k: 0.001, outputPer1k: 0.005 },
-  sonnet: { id: "claude-sonnet-4-5-20250929", inputPer1k: 0.003, outputPer1k: 0.015 },
-  opus: { id: "claude-opus-4-6", inputPer1k: 0.015, outputPer1k: 0.075 },
-};
-
-const DEFAULT_PROMPTS: PromptCase[] = [
-  {
-    name: "code-generation",
-    prompt: "Write a TypeScript function that checks if a string is a valid palindrome, ignoring spaces and punctuation.",
-    rubric: ["correctness", "efficiency", "readability"],
-  },
-  {
-    name: "reasoning",
-    prompt: "A farmer has 17 sheep. All but 9 die. How many are left? Explain your reasoning step by step.",
-    rubric: ["correctness", "clarity"],
-  },
-  {
-    name: "summarization",
-    prompt: "Summarize the key differences between TCP and UDP protocols in exactly 3 bullet points.",
-    rubric: ["accuracy", "conciseness", "completeness"],
-  },
-  {
-    name: "creative",
-    prompt: "Write a 4-line poem about a neural network learning to see.",
-    rubric: ["creativity", "coherence"],
-  },
-];
-
-// ─── API Client ─────────────────────────────────────────────────────────────
-
-async function callClaude(
-  modelId: string,
-  prompt: string,
-  apiKey: string,
-  maxTokens: number
-): Promise<{ text: string; inputTokens: number; outputTokens: number; latencyMs: number }> {
-  const start = Date.now();
-
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: modelId,
-      max_tokens: maxTokens,
-      messages: [{ role: "user", content: prompt }],
-    }),
-  });
-
-  const latencyMs = Date.now() - start;
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`API ${res.status}: ${errText}`);
-  }
-
-  const data = await res.json();
-  const text = data.content?.[0]?.text || "";
-  const inputTokens = data.usage?.input_tokens || 0;
-  const outputTokens = data.usage?.output_tokens || 0;
-
-  return { text, inputTokens, outputTokens, latencyMs };
-}
-
-// ─── Statistics ─────────────────────────────────────────────────────────────
-
-function percentile(arr: number[], p: number): number {
-  const sorted = [...arr].sort((a, b) => a - b);
-  const idx = Math.ceil((p / 100) * sorted.length) - 1;
-  return sorted[Math.max(0, idx)];
-}
-
-function computeStats(results: ModelResult[]): ModelStats[] {
-  const byModel = new Map<string, ModelResult[]>();
-  for (const r of results) {
-    const list = byModel.get(r.model) || [];
-    list.push(r);
-    byModel.set(r.model, list);
-  }
-
-  const stats: ModelStats[] = [];
-  for (const [model, runs] of byModel) {
-    const latencies = runs.filter((r) => !r.error).map((r) => r.latencyMs);
-    const errors = runs.filter((r) => r.error).length;
-
-    stats.push({
-      model,
-      totalRuns: runs.length,
-      avgLatencyMs: latencies.length > 0 ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length) : 0,
-      p50LatencyMs: latencies.length > 0 ? percentile(latencies, 50) : 0,
-      p95LatencyMs: latencies.length > 0 ? percentile(latencies, 95) : 0,
-      p99LatencyMs: latencies.length > 0 ? percentile(latencies, 99) : 0,
-      avgInputTokens: Math.round(runs.reduce((a, r) => a + r.inputTokens, 0) / runs.length),
-      avgOutputTokens: Math.round(runs.reduce((a, r) => a + r.outputTokens, 0) / runs.length),
-      totalCostUsd: runs.reduce((a, r) => a + r.costUsd, 0),
-      errorRate: errors / runs.length,
-    });
-  }
-
-  return stats.sort((a, b) => a.avgLatencyMs - b.avgLatencyMs);
-}
-
-// ─── Benchmark Runner ───────────────────────────────────────────────────────
-
-export async function runBenchmark(options: BenchmarkOptions = {}): Promise<BenchmarkResult> {
-  const apiKey = options.apiKey || process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("Missing ANTHROPIC_API_KEY");
-
-  const models = options.models || ["haiku", "sonnet"];
-  const prompts = options.prompts || DEFAULT_PROMPTS;
-  const maxTokens = options.maxTokens || 1024;
-  const results: ModelResult[] = [];
-
-  for (const promptCase of prompts) {
-    for (const modelName of models) {
-      const catalog = MODEL_CATALOG[modelName];
-      if (!catalog) {
-        results.push({
-          model: modelName,
-          modelId: "unknown",
-          prompt: promptCase.prompt,
-          promptName: promptCase.name,
-          response: "",
-          latencyMs: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          costUsd: 0,
-          error: `Unknown model: ${modelName}`,
-        });
-        continue;
-      }
-
-      try {
-        const res = await callClaude(catalog.id, promptCase.prompt, apiKey, promptCase.maxTokens || maxTokens);
-        const cost = (res.inputTokens / 1000) * catalog.inputPer1k + (res.outputTokens / 1000) * catalog.outputPer1k;
-
-        results.push({
-          model: modelName,
-          modelId: catalog.id,
-          prompt: promptCase.prompt,
-          promptName: promptCase.name,
-          response: res.text,
-          latencyMs: res.latencyMs,
-          inputTokens: res.inputTokens,
-          outputTokens: res.outputTokens,
-          costUsd: Math.round(cost * 1000000) / 1000000,
-        });
-
-        console.log(`  [${modelName}] ${promptCase.name}: ${res.latencyMs}ms, ${res.outputTokens} tokens`);
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        results.push({
-          model: modelName,
-          modelId: catalog.id,
-          prompt: promptCase.prompt,
-          promptName: promptCase.name,
-          response: "",
-          latencyMs: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-          costUsd: 0,
-          error: message,
-        });
-        console.log(`  [${modelName}] ${promptCase.name}: ERROR - ${message}`);
-      }
-    }
-  }
-
-  return {
-    timestamp: new Date().toISOString(),
-    results,
-    stats: computeStats(results),
-    models,
-    promptCount: prompts.length,
-  };
-}
-
-// ─── Report Generation ──────────────────────────────────────────────────────
-
-export function generateReport(benchmark: BenchmarkResult): ReportOutput {
-  const lines: string[] = [];
-  lines.push("# Claude Model Benchmark Report");
-  lines.push(`\nDate: ${benchmark.timestamp}`);
-  lines.push(`Models: ${benchmark.models.join(", ")}`);
-  lines.push(`Prompts: ${benchmark.promptCount}`);
-
-  // Stats table
-  lines.push("\n## Performance Summary\n");
-  lines.push("| Model | Avg Latency | P50 | P95 | Avg Output Tokens | Total Cost | Errors |");
-  lines.push("|-------|------------|-----|-----|-------------------|------------|--------|");
-  for (const s of benchmark.stats) {
-    lines.push(
-      `| ${s.model} | ${s.avgLatencyMs}ms | ${s.p50LatencyMs}ms | ${s.p95LatencyMs}ms | ${s.avgOutputTokens} | $${s.totalCostUsd.toFixed(4)} | ${(s.errorRate * 100).toFixed(0)}% |`
-    );
-  }
-
-  // Per-prompt breakdown
-  lines.push("\n## Per-Prompt Results\n");
-  const promptNames = [...new Set(benchmark.results.map((r) => r.promptName))];
-  for (const pName of promptNames) {
-    lines.push(`### ${pName}\n`);
-    const promptResults = benchmark.results.filter((r) => r.promptName === pName);
-    lines.push("| Model | Latency | Tokens | Cost | Status |");
-    lines.push("|-------|---------|--------|------|--------|");
-    for (const r of promptResults) {
-      const status = r.error ? `Error: ${r.error.slice(0, 40)}` : "OK";
-      lines.push(`| ${r.model} | ${r.latencyMs}ms | ${r.outputTokens} | $${r.costUsd.toFixed(6)} | ${status} |`);
-    }
-    lines.push("");
-  }
-
-  const markdown = lines.join("\n");
-  const fastest = benchmark.stats[0];
-  const summary = fastest
-    ? `Fastest: ${fastest.model} (${fastest.avgLatencyMs}ms avg). ${benchmark.results.length} runs across ${benchmark.models.length} models.`
-    : "No results.";
-
-  return { markdown, summary };
-}
-
-// ─── Offline Mode (no API key needed) ───────────────────────────────────────
-
-export function generateDryRunReport(): ReportOutput {
-  const mockResults: ModelResult[] = [];
-  const models = ["haiku", "sonnet", "opus"];
-  const prompts = DEFAULT_PROMPTS;
-
-  for (const p of prompts) {
-    for (const m of models) {
-      const catalog = MODEL_CATALOG[m];
-      const mockLatency = m === "haiku" ? 200 + Math.random() * 100 : m === "sonnet" ? 500 + Math.random() * 200 : 1000 + Math.random() * 500;
-      const mockOutputTokens = 50 + Math.floor(Math.random() * 200);
-      const mockInputTokens = Math.floor(p.prompt.length / 4);
-      const cost = (mockInputTokens / 1000) * catalog.inputPer1k + (mockOutputTokens / 1000) * catalog.outputPer1k;
-
-      mockResults.push({
-        model: m,
-        modelId: catalog.id,
-        prompt: p.prompt,
-        promptName: p.name,
-        response: `[Mock ${m} response for ${p.name}]`,
-        latencyMs: Math.round(mockLatency),
-        inputTokens: mockInputTokens,
-        outputTokens: mockOutputTokens,
-        costUsd: Math.round(cost * 1000000) / 1000000,
-      });
-    }
-  }
-
-  const benchmark: BenchmarkResult = {
-    timestamp: new Date().toISOString(),
-    results: mockResults,
-    stats: computeStats(mockResults),
-    models,
-    promptCount: prompts.length,
-  };
-
-  return generateReport(benchmark);
-}
-
-// ─── CLI ────────────────────────────────────────────────────────────────────
 
 function printHelp(): void {
-  console.log(`claude-model-benchmark v1.0.0
+  console.log(`claude-model-benchmark v${VERSION}
+Benchmark AI models side-by-side. Claude vs GPT vs Gemini. BYOK.
 
 Usage:
-  claude-model-benchmark run [options]
+  claude-model-benchmark run [options]           Run benchmark against live APIs
+  claude-model-benchmark dry-run                 Generate mock cross-provider report (no keys needed)
+  claude-model-benchmark compare <m1> <m2> [options]  Side-by-side model comparison
+  claude-model-benchmark providers               Show configured providers and available models
+  claude-model-benchmark report <file>           Generate report from saved results JSON
+  claude-model-benchmark --help                  Show this help
+
+Run Options:
+  --models <list>      Comma-separated: haiku,gpt-4o-mini,gemini-2.0-flash
+  --providers <list>   Comma-separated: anthropic,openai,gemini
+  --prompts <file>     Path to prompts JSON file (default: built-in suite)
+  --output <file>      Save results JSON to file
+
+Compare Options:
+  --prompt <text>      Custom prompt for side-by-side comparison
+  --max-tokens <n>     Max output tokens (default: 1024)
+
+Environment Variables (BYOK):
+  ANTHROPIC_API_KEY    For Claude models (Haiku 4.5, Sonnet 4.5)
+  OPENAI_API_KEY       For GPT models (GPT-4o Mini, GPT-4o)
+  GEMINI_API_KEY       For Gemini models (Gemini 2.0 Flash)
+
+Examples:
   claude-model-benchmark dry-run
-  claude-model-benchmark report <results.json>
-  claude-model-benchmark --help
-
-Commands:
-  run        Run benchmark against Claude API (requires ANTHROPIC_API_KEY)
-  dry-run    Generate mock report without API calls
-  report     Generate report from saved results JSON
-
-Options:
-  --models <list>    Comma-separated: haiku,sonnet,opus (default: haiku,sonnet)
-  --prompts <file>   Path to prompts JSON file (default: built-in suite)
-  --output <file>    Save results JSON to file
-  --help             Show this help`);
+  claude-model-benchmark providers
+  claude-model-benchmark run --providers anthropic,openai
+  claude-model-benchmark run --models haiku,gpt-4o-mini
+  claude-model-benchmark compare haiku gpt-4o-mini --prompt "Write a haiku about code"
+  claude-model-benchmark report results.json`);
 }
+
+// ── Command: providers ──────────────────────────────────────────────────────
+
+function cmdProviders(): void {
+  console.log(`claude-model-benchmark v${VERSION} — Provider Status\n`);
+
+  const available = providersMod.getAvailableProviders();
+  let configuredCount = 0;
+  let totalModels = 0;
+
+  for (const [key, cfg] of Object.entries(providersMod.PROVIDERS)) {
+    const hasKey = available.includes(key);
+    if (hasKey) configuredCount++;
+    const status = hasKey ? "READY" : `NOT CONFIGURED (set ${cfg.envKey})`;
+    const icon = hasKey ? "[+]" : "[-]";
+    console.log(`${icon} ${cfg.name} (${key}): ${status}`);
+    for (const model of cfg.models) {
+      totalModels++;
+      const costInfo =
+        model.inputCost === 0 && model.outputCost === 0
+          ? "FREE"
+          : `$${model.inputCost}/1K in, $${model.outputCost}/1K out`;
+      console.log(`    ${model.label} (${model.id}) — ${costInfo}`);
+    }
+    console.log("");
+  }
+
+  console.log(
+    `${configuredCount}/${Object.keys(providersMod.PROVIDERS).length} providers configured, ${totalModels} models available.`
+  );
+
+  if (configuredCount === 0) {
+    console.log(
+      "\nNo API keys found. Set at least one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY"
+    );
+    console.log(
+      'Or try "claude-model-benchmark dry-run" for a demo without API keys.'
+    );
+  }
+}
+
+// ── Command: dry-run ────────────────────────────────────────────────────────
+
+function cmdDryRun(): void {
+  console.log(`claude-model-benchmark v${VERSION} — Dry Run (Mock Data)\n`);
+  console.log("Generating cross-provider benchmark with mock data...");
+  console.log("(No API keys needed — all providers simulated)\n");
+  const report = benchmarkMod.generateDryRunReport();
+  console.log(report.markdown);
+  console.log(`\n${report.summary}`);
+}
+
+// ── Command: report ─────────────────────────────────────────────────────────
+
+async function cmdReport(filePath: string): Promise<void> {
+  console.log(`claude-model-benchmark v${VERSION} — Report from ${filePath}\n`);
+  const fs = await import("fs");
+  if (!fs.existsSync(filePath)) {
+    console.error(`File not found: ${filePath}`);
+    process.exit(1);
+  }
+  const data = JSON.parse(
+    fs.readFileSync(filePath, "utf-8")
+  ) as BenchmarkResultType;
+  const report = benchmarkMod.generateReport(data);
+  console.log(report.markdown);
+  console.log(`\n${report.summary}`);
+}
+
+// ── Command: compare ────────────────────────────────────────────────────────
+
+async function cmdCompare(args: string[]): Promise<void> {
+  console.log(`claude-model-benchmark v${VERSION} — Side-by-Side Comparison\n`);
+
+  // Parse model names (first two positional args after "compare")
+  const modelArgs: string[] = [];
+  for (let i = 1; i < args.length; i++) {
+    if (args[i].startsWith("--")) {
+      i++; // skip flag value
+      continue;
+    }
+    modelArgs.push(args[i]);
+  }
+
+  if (modelArgs.length < 2) {
+    console.error(
+      "Need at least 2 models to compare.\nUsage: claude-model-benchmark compare <model1> <model2> [--prompt <text>]"
+    );
+    process.exit(1);
+  }
+
+  // Resolve models
+  const resolved = modelArgs.map((q) => ({
+    query: q,
+    model: providersMod.resolveModel(q),
+  }));
+  for (const r of resolved) {
+    if (!r.model) {
+      console.error(`Unknown model: "${r.query}". Use "providers" command to see available models.`);
+      process.exit(1);
+    }
+  }
+
+  // Check API keys
+  for (const r of resolved) {
+    const key = providersMod.getApiKey(r.model!.provider);
+    if (!key) {
+      console.error(
+        `Missing API key for ${r.model!.providerName}. Set ${providersMod.PROVIDERS[r.model!.provider]?.envKey}`
+      );
+      process.exit(1);
+    }
+  }
+
+  // Build prompts
+  const customPrompt = getArg(args, "--prompt");
+  const maxTokens = parseInt(getArg(args, "--max-tokens") || "1024", 10);
+  const prompts: PromptCaseType[] = customPrompt
+    ? [{ name: "custom", prompt: customPrompt }]
+    : benchmarkMod.DEFAULT_PROMPTS;
+
+  console.log(
+    `Comparing: ${resolved.map((r) => `${r.model!.label} (${r.model!.providerName})`).join(" vs ")}`
+  );
+  console.log(`Prompts: ${prompts.length}`);
+  console.log("");
+
+  const result = await benchmarkMod.runBenchmark({
+    models: modelArgs,
+    prompts,
+    maxTokens,
+  });
+
+  // Save output if requested
+  const outputPath = getArg(args, "--output");
+  if (outputPath) {
+    const fs = await import("fs");
+    fs.writeFileSync(outputPath, JSON.stringify(result, null, 2));
+    console.log(`\nResults saved to ${outputPath}`);
+  }
+
+  const report = benchmarkMod.generateReport(result);
+  console.log(`\n${report.markdown}`);
+  console.log(`\n${report.summary}`);
+}
+
+// ── Command: run ────────────────────────────────────────────────────────────
+
+async function cmdRun(args: string[]): Promise<void> {
+  console.log(`claude-model-benchmark v${VERSION} — Live Benchmark\n`);
+
+  // Parse flags
+  const providersArg = getArg(args, "--providers");
+  const providers = providersArg ? providersArg.split(",") : undefined;
+
+  const modelsArg = getArg(args, "--models");
+  const models = modelsArg ? modelsArg.split(",") : undefined;
+
+  const promptsArg = getArg(args, "--prompts");
+  let prompts: PromptCaseType[] | undefined;
+  if (promptsArg) {
+    const fs = await import("fs");
+    prompts = JSON.parse(fs.readFileSync(promptsArg, "utf-8"));
+  }
+
+  // Show provider status
+  const available = providersMod.getAvailableProviders();
+  console.log("Provider Status:");
+  for (const [key, cfg] of Object.entries(providersMod.PROVIDERS)) {
+    const hasKey = available.includes(key);
+    const status = hasKey ? "READY" : `MISSING (set ${cfg.envKey})`;
+    const icon = hasKey ? "[+]" : "[-]";
+    console.log(`  ${icon} ${cfg.name}: ${status}`);
+    for (const model of cfg.models) {
+      console.log(`      ${model.label} (${model.id})`);
+    }
+  }
+  console.log("");
+
+  console.log("Running cross-provider benchmark...\n");
+  const result = await benchmarkMod.runBenchmark({ providers, models, prompts });
+
+  // Save results if requested
+  const outputPath = getArg(args, "--output");
+  if (outputPath) {
+    const fs = await import("fs");
+    fs.writeFileSync(outputPath, JSON.stringify(result, null, 2));
+    console.log(`\nResults saved to ${outputPath}`);
+  }
+
+  const report = benchmarkMod.generateReport(result);
+  console.log(`\n${report.markdown}`);
+  console.log(`\n${report.summary}`);
+}
+
+// ── Main ────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
-  if (args.includes("--help") || args.length === 0) {
+  if (args.includes("--help") || args.includes("-h") || args.length === 0) {
     printHelp();
     return;
   }
 
   const command = args[0];
 
-  if (command === "dry-run") {
-    const report = generateDryRunReport();
-    console.log(report.markdown);
-    console.log(`\n${report.summary}`);
-    return;
-  }
+  switch (command) {
+    case "dry-run":
+    case "demo":
+      cmdDryRun();
+      return;
 
-  if (command === "report") {
-    const filePath = args[1];
-    if (!filePath) {
-      console.error("Missing results file. Usage: claude-model-benchmark report <results.json>");
+    case "providers":
+      cmdProviders();
+      return;
+
+    case "report": {
+      const filePath = args[1];
+      if (!filePath) {
+        console.error(
+          "Missing results file. Usage: claude-model-benchmark report <results.json>"
+        );
+        process.exit(1);
+      }
+      await cmdReport(filePath);
+      return;
+    }
+
+    case "compare":
+      await cmdCompare(args);
+      return;
+
+    case "run":
+      await cmdRun(args);
+      return;
+
+    default:
+      console.error(`Unknown command: ${command}. Use --help for usage.`);
       process.exit(1);
-    }
-    const fs = await import("fs");
-    const data = JSON.parse(fs.readFileSync(filePath, "utf-8")) as BenchmarkResult;
-    const report = generateReport(data);
-    console.log(report.markdown);
-    return;
   }
-
-  if (command === "run") {
-    const modelsIdx = args.indexOf("--models");
-    const models = modelsIdx !== -1 && args[modelsIdx + 1] ? args[modelsIdx + 1].split(",") : undefined;
-
-    const promptsIdx = args.indexOf("--prompts");
-    let prompts: PromptCase[] | undefined;
-    if (promptsIdx !== -1 && args[promptsIdx + 1]) {
-      const fs = await import("fs");
-      prompts = JSON.parse(fs.readFileSync(args[promptsIdx + 1], "utf-8"));
-    }
-
-    console.log("Running Claude model benchmark...\n");
-    const result = await runBenchmark({ models, prompts });
-
-    const outputIdx = args.indexOf("--output");
-    if (outputIdx !== -1 && args[outputIdx + 1]) {
-      const fs = await import("fs");
-      fs.writeFileSync(args[outputIdx + 1], JSON.stringify(result, null, 2));
-      console.log(`\nResults saved to ${args[outputIdx + 1]}`);
-    }
-
-    const report = generateReport(result);
-    console.log(`\n${report.markdown}`);
-    console.log(`\n${report.summary}`);
-    return;
-  }
-
-  console.error(`Unknown command: ${command}. Use --help for usage.`);
-  process.exit(1);
 }
 
 main().catch((err) => {
