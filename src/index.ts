@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
 /**
- * claude-model-benchmark — Benchmark AI models side-by-side.
- * Claude vs GPT vs Gemini. Bring your own keys.
+ * claude-model-benchmark — Deep agent for AI model benchmarking.
  *
- * Multi-provider BYOK benchmarking with cross-provider comparison reports.
+ * ReAct agent: discover models -> design tests -> execute -> analyze -> recommend.
+ * Inspired by LangChain ReAct, Anthropic agents, Manus AI.
+ * Multi-provider BYOK with cross-provider comparison.
  */
 
 // ── Public API (programmatic usage) ─────────────────────────────────────────
@@ -24,7 +25,13 @@ export {
   resolveModel,
   getApiKey,
   callProvider,
+  callProviderMultiTurn,
 } from "./providers";
+export {
+  runAgent,
+  createBenchmarkTools,
+  createCompareTools,
+} from "./agent";
 export type {
   BenchmarkOptions,
   BenchmarkResult,
@@ -37,17 +44,20 @@ export type {
   WinnerRecommendation,
   ApiCallResult,
 } from "./types";
+export type { AgentTool, AgentStep, AgentResult } from "./agent";
 
 // ── CLI ─────────────────────────────────────────────────────────────────────
 
 import * as benchmarkMod from "./benchmark";
 import * as providersMod from "./providers";
+import { runAgent, createBenchmarkTools, createCompareTools } from "./agent";
+import type { AgentResult } from "./agent";
 import type {
   PromptCase as PromptCaseType,
   BenchmarkResult as BenchmarkResultType,
 } from "./types";
 
-const VERSION = "2.0.0";
+const VERSION = "3.0.0";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -56,46 +66,81 @@ function getArg(args: string[], flag: string): string | undefined {
   return idx !== -1 && args[idx + 1] ? args[idx + 1] : undefined;
 }
 
+function formatAgentResult(result: AgentResult): string {
+  const lines: string[] = [];
+
+  if (result.steps.length > 0) {
+    lines.push(`\n  Agent Trace (${result.totalSteps} steps):`);
+    lines.push(`  ${"=".repeat(50)}`);
+    for (let i = 0; i < result.steps.length; i++) {
+      const step = result.steps[i];
+      lines.push(`  Step ${i + 1}: [${step.action}]`);
+      lines.push(`    Thought: ${step.thought}`);
+      const preview = step.observation.length > 300
+        ? step.observation.slice(0, 300) + "..."
+        : step.observation;
+      lines.push(`    Result: ${preview}`);
+      lines.push("");
+    }
+  }
+
+  lines.push(`  Final Answer:`);
+  lines.push(`  ${"=".repeat(50)}`);
+  lines.push(result.finalAnswer);
+  lines.push(`\n  ---`);
+  lines.push(`  Agent: ${result.totalSteps} steps | Provider: ${result.provider}`);
+
+  return lines.join("\n");
+}
+
 function printHelp(): void {
   console.log(`claude-model-benchmark v${VERSION}
-Benchmark AI models side-by-side. Claude vs GPT vs Gemini. BYOK.
+Deep agent for AI model benchmarking. Claude vs GPT vs Gemini. BYOK.
+
+ReAct agent: discover models -> design tests -> execute -> analyze -> recommend.
+Inspired by LangChain ReAct, Anthropic agents, Manus AI.
 
 Usage:
-  claude-model-benchmark run [options]           Run benchmark against live APIs
-  claude-model-benchmark dry-run                 Generate mock cross-provider report (no keys needed)
-  claude-model-benchmark compare <m1> <m2> [options]  Side-by-side model comparison
-  claude-model-benchmark providers               Show configured providers and available models
-  claude-model-benchmark report <file>           Generate report from saved results JSON
+  claude-model-benchmark agent [options]         Deep agent benchmark (multi-step)
+  claude-model-benchmark run [options]           Direct benchmark against live APIs
+  claude-model-benchmark compare <m1> <m2>       Agent-powered side-by-side comparison
+  claude-model-benchmark dry-run                 Mock cross-provider report (no keys)
+  claude-model-benchmark providers               Show configured providers and models
+  claude-model-benchmark report <file>           Generate report from saved JSON
   claude-model-benchmark --help                  Show this help
 
+Agent Options:
+  --goal <text>       Custom benchmarking goal
+  --max-steps <n>     Max agent steps (default: 8)
+
 Run Options:
-  --models <list>      Comma-separated: haiku,gpt-4o-mini,gemini-2.0-flash
-  --providers <list>   Comma-separated: anthropic,openai,gemini
-  --prompts <file>     Path to prompts JSON file (default: built-in suite)
-  --output <file>      Save results JSON to file
+  --models <list>     Comma-separated model names
+  --providers <list>  Comma-separated provider names
+  --prompts <file>    Prompts JSON file
+  --output <file>     Save results to file
 
 Compare Options:
-  --prompt <text>      Custom prompt for side-by-side comparison
-  --max-tokens <n>     Max output tokens (default: 1024)
+  --prompt <text>     Custom prompt for comparison
+  --max-tokens <n>    Max output tokens (default: 1024)
 
-Environment Variables (BYOK):
-  ANTHROPIC_API_KEY    For Claude models (Haiku 4.5, Sonnet 4.5)
-  OPENAI_API_KEY       For GPT models (GPT-4o Mini, GPT-4o)
-  GEMINI_API_KEY       For Gemini models (Gemini 2.0 Flash)
+Environment (BYOK):
+  ANTHROPIC_API_KEY   Claude Haiku 4.5, Sonnet 4.5, Opus 4.6
+  OPENAI_API_KEY      GPT-4o Mini, GPT-4o, o3-mini
+  GEMINI_API_KEY      Gemini 2.0 Flash, Gemini 2.5 Pro
 
 Examples:
-  claude-model-benchmark dry-run
-  claude-model-benchmark providers
+  claude-model-benchmark agent
+  claude-model-benchmark agent --goal "Compare reasoning ability"
+  claude-model-benchmark compare haiku gpt-4o-mini
   claude-model-benchmark run --providers anthropic,openai
-  claude-model-benchmark run --models haiku,gpt-4o-mini
-  claude-model-benchmark compare haiku gpt-4o-mini --prompt "Write a haiku about code"
-  claude-model-benchmark report results.json`);
+  claude-model-benchmark dry-run
+  claude-model-benchmark providers`);
 }
 
 // ── Command: providers ──────────────────────────────────────────────────────
 
 function cmdProviders(): void {
-  console.log(`claude-model-benchmark v${VERSION} — Provider Status\n`);
+  console.log(`claude-model-benchmark v${VERSION} -- Provider Status\n`);
 
   const available = providersMod.getAvailableProviders();
   let configuredCount = 0;
@@ -113,7 +158,7 @@ function cmdProviders(): void {
         model.inputCost === 0 && model.outputCost === 0
           ? "FREE"
           : `$${model.inputCost}/1K in, $${model.outputCost}/1K out`;
-      console.log(`    ${model.label} (${model.id}) — ${costInfo}`);
+      console.log(`    ${model.label} (${model.id}) -- ${costInfo}`);
     }
     console.log("");
   }
@@ -135,18 +180,82 @@ function cmdProviders(): void {
 // ── Command: dry-run ────────────────────────────────────────────────────────
 
 function cmdDryRun(): void {
-  console.log(`claude-model-benchmark v${VERSION} — Dry Run (Mock Data)\n`);
-  console.log("Generating cross-provider benchmark with mock data...");
-  console.log("(No API keys needed — all providers simulated)\n");
+  console.log(`claude-model-benchmark v${VERSION} -- Dry Run (Mock Data)\n`);
+  console.log("Generating cross-provider benchmark with mock data...\n");
   const report = benchmarkMod.generateDryRunReport();
   console.log(report.markdown);
   console.log(`\n${report.summary}`);
 }
 
+// ── Command: agent (deep agent benchmark) ───────────────────────────────────
+
+async function cmdAgent(args: string[]): Promise<void> {
+  console.log(`claude-model-benchmark v${VERSION} -- Deep Agent Benchmark\n`);
+
+  const available = providersMod.getAvailableProviders();
+  if (available.length === 0) {
+    console.error(
+      "No API keys configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY."
+    );
+    process.exit(1);
+  }
+
+  const customGoal = getArg(args, "--goal");
+  const maxSteps = parseInt(getArg(args, "--max-steps") || "8", 10);
+
+  const goal =
+    customGoal ||
+    "Benchmark all available models. List them first, design 3 test prompts for reasoning and creativity, run each test on each model, compute statistics, compare results, and give a clear recommendation for best overall, best value, and fastest.";
+
+  console.log("Running deep agent benchmark...\n");
+
+  const result = await runAgent({
+    goal,
+    tools: createBenchmarkTools(),
+    maxSteps,
+  });
+
+  console.log(formatAgentResult(result));
+}
+
+// ── Command: compare (agent-powered) ────────────────────────────────────────
+
+async function cmdCompare(args: string[]): Promise<void> {
+  console.log(`claude-model-benchmark v${VERSION} -- Agent Comparison\n`);
+
+  const modelArgs: string[] = [];
+  for (let i = 1; i < args.length; i++) {
+    if (args[i].startsWith("--")) {
+      i++;
+      continue;
+    }
+    modelArgs.push(args[i]);
+  }
+
+  if (modelArgs.length < 2) {
+    console.error(
+      "Need at least 2 models to compare.\nUsage: claude-model-benchmark compare <model1> <model2>"
+    );
+    process.exit(1);
+  }
+
+  const customPrompt = getArg(args, "--prompt");
+  const promptCtx = customPrompt
+    ? ` Use this test prompt: "${customPrompt}"`
+    : "";
+
+  const result = await runAgent({
+    goal: `Compare these models side by side: ${modelArgs.join(", ")}. Run tests on each, compute statistics, compare response quality, and recommend a winner.${promptCtx}`,
+    tools: createCompareTools(),
+  });
+
+  console.log(formatAgentResult(result));
+}
+
 // ── Command: report ─────────────────────────────────────────────────────────
 
 async function cmdReport(filePath: string): Promise<void> {
-  console.log(`claude-model-benchmark v${VERSION} — Report from ${filePath}\n`);
+  console.log(`claude-model-benchmark v${VERSION} -- Report from ${filePath}\n`);
   const fs = await import("fs");
   if (!fs.existsSync(filePath)) {
     console.error(`File not found: ${filePath}`);
@@ -160,89 +269,11 @@ async function cmdReport(filePath: string): Promise<void> {
   console.log(`\n${report.summary}`);
 }
 
-// ── Command: compare ────────────────────────────────────────────────────────
-
-async function cmdCompare(args: string[]): Promise<void> {
-  console.log(`claude-model-benchmark v${VERSION} — Side-by-Side Comparison\n`);
-
-  // Parse model names (first two positional args after "compare")
-  const modelArgs: string[] = [];
-  for (let i = 1; i < args.length; i++) {
-    if (args[i].startsWith("--")) {
-      i++; // skip flag value
-      continue;
-    }
-    modelArgs.push(args[i]);
-  }
-
-  if (modelArgs.length < 2) {
-    console.error(
-      "Need at least 2 models to compare.\nUsage: claude-model-benchmark compare <model1> <model2> [--prompt <text>]"
-    );
-    process.exit(1);
-  }
-
-  // Resolve models
-  const resolved = modelArgs.map((q) => ({
-    query: q,
-    model: providersMod.resolveModel(q),
-  }));
-  for (const r of resolved) {
-    if (!r.model) {
-      console.error(`Unknown model: "${r.query}". Use "providers" command to see available models.`);
-      process.exit(1);
-    }
-  }
-
-  // Check API keys
-  for (const r of resolved) {
-    const key = providersMod.getApiKey(r.model!.provider);
-    if (!key) {
-      console.error(
-        `Missing API key for ${r.model!.providerName}. Set ${providersMod.PROVIDERS[r.model!.provider]?.envKey}`
-      );
-      process.exit(1);
-    }
-  }
-
-  // Build prompts
-  const customPrompt = getArg(args, "--prompt");
-  const maxTokens = parseInt(getArg(args, "--max-tokens") || "1024", 10);
-  const prompts: PromptCaseType[] = customPrompt
-    ? [{ name: "custom", prompt: customPrompt }]
-    : benchmarkMod.DEFAULT_PROMPTS;
-
-  console.log(
-    `Comparing: ${resolved.map((r) => `${r.model!.label} (${r.model!.providerName})`).join(" vs ")}`
-  );
-  console.log(`Prompts: ${prompts.length}`);
-  console.log("");
-
-  const result = await benchmarkMod.runBenchmark({
-    models: modelArgs,
-    prompts,
-    maxTokens,
-  });
-
-  // Save output if requested
-  const outputPath = getArg(args, "--output");
-  if (outputPath) {
-    const fs = await import("fs");
-    fs.writeFileSync(outputPath, JSON.stringify(result, null, 2));
-    console.log(`\nResults saved to ${outputPath}`);
-  }
-
-  const report = benchmarkMod.generateReport(result);
-  console.log(`\n${report.markdown}`);
-  console.log(`\n${report.summary}`);
-}
-
-// ── Command: run ────────────────────────────────────────────────────────────
+// ── Command: run (direct benchmark) ─────────────────────────────────────────
 
 async function cmdRun(args: string[]): Promise<void> {
-  console.log(`claude-model-benchmark v${VERSION} — Live Benchmark\n`);
+  console.log(`claude-model-benchmark v${VERSION} -- Live Benchmark\n`);
 
-  // Parse flags
   const providersArg = getArg(args, "--providers");
   const providers = providersArg ? providersArg.split(",") : undefined;
 
@@ -256,7 +287,6 @@ async function cmdRun(args: string[]): Promise<void> {
     prompts = JSON.parse(fs.readFileSync(promptsArg, "utf-8"));
   }
 
-  // Show provider status
   const available = providersMod.getAvailableProviders();
   console.log("Provider Status:");
   for (const [key, cfg] of Object.entries(providersMod.PROVIDERS)) {
@@ -273,7 +303,6 @@ async function cmdRun(args: string[]): Promise<void> {
   console.log("Running cross-provider benchmark...\n");
   const result = await benchmarkMod.runBenchmark({ providers, models, prompts });
 
-  // Save results if requested
   const outputPath = getArg(args, "--output");
   if (outputPath) {
     const fs = await import("fs");
@@ -299,6 +328,10 @@ async function main(): Promise<void> {
   const command = args[0];
 
   switch (command) {
+    case "agent":
+      await cmdAgent(args);
+      return;
+
     case "dry-run":
     case "demo":
       cmdDryRun();

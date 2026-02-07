@@ -1,6 +1,6 @@
 {
   "name": "claude-model-benchmark",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "Benchmark LLM models across Anthropic, OpenAI, and Google — side by side. Multi-provider BYOK with cross-provider comparison reports.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

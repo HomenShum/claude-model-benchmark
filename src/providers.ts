@@ -15,6 +15,7 @@ export const PROVIDERS: Record<string, ProviderConfig> = {
     models: [
       { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5", inputCost: 0.001, outputCost: 0.005 },
       { id: "claude-sonnet-4-5-20250929", label: "Sonnet 4.5", inputCost: 0.003, outputCost: 0.015 },
+      { id: "claude-opus-4-6", label: "Opus 4.6", inputCost: 0.015, outputCost: 0.075 },
     ],
     envKey: "ANTHROPIC_API_KEY",
   },
@@ -23,6 +24,7 @@ export const PROVIDERS: Record<string, ProviderConfig> = {
     models: [
       { id: "gpt-4o-mini", label: "GPT-4o Mini", inputCost: 0.00015, outputCost: 0.0006 },
       { id: "gpt-4o", label: "GPT-4o", inputCost: 0.0025, outputCost: 0.01 },
+      { id: "o3-mini", label: "o3-mini", inputCost: 0.0011, outputCost: 0.0044 },
     ],
     envKey: "OPENAI_API_KEY",
   },
@@ -30,6 +32,7 @@ export const PROVIDERS: Record<string, ProviderConfig> = {
     name: "Google",
     models: [
       { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash", inputCost: 0.0, outputCost: 0.0 },
+      { id: "gemini-2.5-pro-preview-06-05", label: "Gemini 2.5 Pro", inputCost: 0.00125, outputCost: 0.01 },
     ],
     envKey: "GEMINI_API_KEY",
   },
@@ -236,6 +239,146 @@ export async function callProvider(
       return callOpenAI(modelId, prompt, apiKey, maxTokens);
     case "gemini":
       return callGemini(modelId, prompt, apiKey, maxTokens);
+    default:
+      throw new Error(`Unknown provider: ${providerKey}`);
+  }
+}
+
+// --- Multi-Turn API Callers --------------------------------------------------
+
+export interface MultiTurnMessage {
+  role: string;
+  content: string;
+}
+
+export async function callAnthropicMultiTurn(
+  modelId: string,
+  systemPrompt: string,
+  messages: MultiTurnMessage[],
+  apiKey: string,
+  maxTokens: number
+): Promise<ApiCallResult> {
+  const start = Date.now();
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: modelId,
+      max_tokens: maxTokens,
+      system: systemPrompt,
+      messages: messages.map((m) => ({ role: m.role, content: m.content })),
+    }),
+  });
+  const latencyMs = Date.now() - start;
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Anthropic API ${res.status}: ${errText}`);
+  }
+  const data = await res.json();
+  return {
+    text: data.content?.[0]?.text || "",
+    inputTokens: data.usage?.input_tokens || 0,
+    outputTokens: data.usage?.output_tokens || 0,
+    latencyMs,
+  };
+}
+
+export async function callOpenAIMultiTurn(
+  modelId: string,
+  systemPrompt: string,
+  messages: MultiTurnMessage[],
+  apiKey: string,
+  maxTokens: number
+): Promise<ApiCallResult> {
+  const start = Date.now();
+  const allMessages = [
+    { role: "system", content: systemPrompt },
+    ...messages.map((m) => ({ role: m.role, content: m.content })),
+  ];
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: modelId,
+      max_tokens: maxTokens,
+      messages: allMessages,
+    }),
+  });
+  const latencyMs = Date.now() - start;
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`OpenAI API ${res.status}: ${errText}`);
+  }
+  const data = await res.json();
+  const choice = data.choices?.[0];
+  return {
+    text: choice?.message?.content || "",
+    inputTokens: data.usage?.prompt_tokens || 0,
+    outputTokens: data.usage?.completion_tokens || 0,
+    latencyMs,
+  };
+}
+
+export async function callGeminiMultiTurn(
+  modelId: string,
+  systemPrompt: string,
+  messages: MultiTurnMessage[],
+  apiKey: string,
+  maxTokens: number
+): Promise<ApiCallResult> {
+  const start = Date.now();
+  const contents = messages.map((m) => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: [{ text: m.content }],
+  }));
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: systemPrompt }] },
+      contents,
+      generationConfig: { maxOutputTokens: maxTokens },
+    }),
+  });
+  const latencyMs = Date.now() - start;
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new Error(`Gemini API ${res.status}: ${errText}`);
+  }
+  const data = await res.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  const inputTokens = data.usageMetadata?.promptTokenCount || 0;
+  const outputTokens = data.usageMetadata?.candidatesTokenCount || 0;
+  return { text, inputTokens, outputTokens, latencyMs };
+}
+
+/**
+ * Dispatch a multi-turn API call to the correct provider.
+ * Uses system prompt + message history for multi-step agent conversations.
+ */
+export async function callProviderMultiTurn(
+  providerKey: string,
+  modelId: string,
+  systemPrompt: string,
+  messages: MultiTurnMessage[],
+  apiKey: string,
+  maxTokens: number
+): Promise<ApiCallResult> {
+  switch (providerKey) {
+    case "anthropic":
+      return callAnthropicMultiTurn(modelId, systemPrompt, messages, apiKey, maxTokens);
+    case "openai":
+      return callOpenAIMultiTurn(modelId, systemPrompt, messages, apiKey, maxTokens);
+    case "gemini":
+      return callGeminiMultiTurn(modelId, systemPrompt, messages, apiKey, maxTokens);
     default:
       throw new Error(`Unknown provider: ${providerKey}`);
   }
