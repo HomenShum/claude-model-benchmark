@@ -595,3 +595,114 @@ describe("Winner determination", () => {
     assert.ok(report.summary.includes("Best value"));
   });
 });
+
+// =============================================================================
+// 10. A host application can import the API without becoming the benchmark CLI.
+// =============================================================================
+
+import { execFile } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, lstatSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, sep, delimiter } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const sourceCheckout = fileURLToPath(new URL("../../", import.meta.url));
+
+function isolatedConsumer(t) {
+  const directory = mkdtempSync(join(tmpdir(), "claude-benchmark-import-"));
+  const temporaryRoot = realpathSync(tmpdir());
+  const home = join(directory, "home");
+  mkdirSync(home);
+  t.after(() => {
+    const target = realpathSync(directory);
+    assert.ok(target.startsWith(temporaryRoot + sep));
+    assert.ok(!lstatSync(directory).isSymbolicLink());
+    rmSync(target, { recursive: true });
+  });
+
+  const guard = join(directory, "no-network.cjs");
+  writeFileSync(guard, `
+    const fs = require('node:fs');
+    const net = require('node:net');
+    let attempts = 0;
+    const block = () => { attempts++; throw new Error('Network forbidden in import scenario'); };
+    globalThis.fetch = block;
+    net.Socket.prototype.connect = block;
+    process.on('exit', code => fs.writeFileSync(process.env.BENCH_TEST_TRACE, JSON.stringify({code, attempts})));
+  `, { flag: "wx" });
+
+  for (const kind of ["cjs", "mjs"]) {
+    const load = kind === "cjs" ? "require(target)" : "await import(target)";
+    writeFileSync(join(directory, `consumer.${kind}`), `
+      const [target, hostArgs] = process.argv.slice(2);
+      process.argv = [process.execPath, process.argv[1], ...JSON.parse(hostArgs)];
+      const first = ${load};
+      const api = first.default ?? first;
+      if (typeof api.runBenchmark !== 'function' || typeof api.generateReport !== 'function') throw new Error('Public API missing');
+      for (let iteration = 0; iteration < 64; iteration++) {
+        if (${load} !== first || api.percentile([1, 2, 3], 50) !== 2) throw new Error('Repeated import changed API');
+      }
+      process.stdout.write('IMPORT_RETURNED\\n');
+      setImmediate(() => process.stdout.write('HOST_CONTINUED\\n'));
+    `, { flag: "wx" });
+  }
+
+  const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
+  const env = {
+    PATH: [dirname(process.execPath), ...(systemRoot ? [join(systemRoot, "System32"), systemRoot] : [])].join(delimiter),
+    HOME: home, USERPROFILE: home, TEMP: home, TMP: home,
+    APPDATA: home, LOCALAPPDATA: home,
+  };
+  if (systemRoot) { env.SystemRoot = systemRoot; env.WINDIR = systemRoot; }
+
+  const run = (name, args) => new Promise(resolveResult => {
+    const trace = join(directory, `${name}.json`);
+    execFile(process.execPath, ["--require", guard, ...args], {
+      cwd: sourceCheckout, env: { ...env, BENCH_TEST_TRACE: trace },
+      timeout: 10000, maxBuffer: 1024 * 1024, windowsHide: true,
+    }, (error, stdout, stderr) => resolveResult({
+      error, stdout, stderr, trace: JSON.parse(readFileSync(trace, "utf8")),
+    }));
+  });
+  return { directory, run };
+}
+
+describe("Library and CLI entry boundaries", () => {
+  it("lets six concurrent CommonJS/ESM consumers retain foreign arguments through repeated imports", async (t) => {
+    const { directory, run } = isolatedConsumer(t);
+    const hostArguments = [["host-command", "--host-flag"], ["--help"], ["dry-run"]];
+    const jobs = ["cjs", "mjs"].flatMap(kind => hostArguments.map((args, index) => {
+      const target = kind === "cjs" ? sourceCheckout : pathToFileURL(join(sourceCheckout, "dist/index.js")).href;
+      return run(`${kind}-${index}`, [join(directory, `consumer.${kind}`), target, JSON.stringify(args)]);
+    }));
+    const results = await Promise.all(jobs);
+    for (const result of results) {
+      assert.equal(result.error, null, result.stderr);
+      assert.equal(result.stdout, "IMPORT_RETURNED\nHOST_CONTINUED\n");
+      assert.equal(result.stderr, "");
+      assert.deepEqual(result.trace, { code: 0, attempts: 0 });
+    }
+  });
+
+  it("retains direct help and mock dry-run while rejecting an unknown CLI command", async (t) => {
+    const { run } = isolatedConsumer(t);
+    const cli = join(sourceCheckout, "dist/index.js");
+    const help = await run("direct-help", [cli, "--help"]);
+    assert.equal(help.error, null);
+    assert.match(help.stdout, /claude-model-benchmark v3\.0\.0[\s\S]*Usage:/);
+    assert.equal(help.stderr, "");
+    assert.deepEqual(help.trace, { code: 0, attempts: 0 });
+
+    const dry = await run("direct-dry", [cli, "dry-run"]);
+    assert.equal(dry.error, null);
+    assert.match(dry.stdout, /Dry Run \(Mock Data\)[\s\S]*AI Model Benchmark Report/);
+    assert.equal(dry.stderr, "");
+    assert.deepEqual(dry.trace, { code: 0, attempts: 0 });
+
+    const unknown = await run("direct-unknown", [cli, "host-command", "--host-flag"]);
+    assert.equal(unknown.error?.code, 1);
+    assert.equal(unknown.stdout, "");
+    assert.match(unknown.stderr, /^Unknown command: host-command\. Use --help for usage\.\r?\n$/);
+    assert.deepEqual(unknown.trace, { code: 1, attempts: 0 });
+  });
+});

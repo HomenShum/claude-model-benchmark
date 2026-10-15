@@ -189,6 +189,27 @@ console.log(model); // { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5", pr
 | Gemini 3 Flash | Google | `gemini-3-flash-preview` | $0.00 | $0.00 |
 | Gemini 3 Pro | Google | `gemini-3-pro-preview` | $0.00125 | $0.01 |
 
+## Develop from source
+
+From a clean checkout with Node.js and npm installed:
+
+```bash
+npm ci
+npm test
+node dist/index.js --help
+node dist/index.js dry-run
+```
+
+`npm test` compiles the current TypeScript source before running the tests, so a
+fresh checkout does not need an existing `dist/` directory. The help and dry-run
+commands need no provider keys. Dry-run output uses mock data; it is not a live
+model benchmark or evidence of model quality.
+
+Importing the package's public API does not run a CLI command or interpret the
+host application's arguments. The CLI runs when `dist/index.js` is executed
+directly. See the [entry-point history](CHANGELOG/scripts/cli.md) and
+[test workflow history](CHANGELOG/build/tooling.md) for this boundary.
+
 ## Tests
 
 ```bash
@@ -224,3 +245,10 @@ If you're using [nodebench-mcp](https://www.npmjs.com/package/nodebench-mcp), be
 ## License
 
 MIT
+
+
+## Continuous integration
+
+[Offline verification](.github/workflows/verify.yml) runs for pull requests and pushes to `master` on Ubuntu 24.04 and Windows 2025 with Node 22 and 24. It installs the locked dependencies, runs `npm test` (including the build), checks CLI help and mock dry-run, and runs `npm audit --audit-level=low`. It does not request provider credentials, publish a package, or deploy an app. GitHub supplies its normal read-only workflow token.
+
+These checks cover source and offline behavior; they do not measure live model quality. Read the [CI history](CHANGELOG/ci/verify.md) for the initial proof and its limits.
