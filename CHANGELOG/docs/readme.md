@@ -13,3 +13,7 @@ change's existing surface lanes. No registry publication, model catalog, pricing
 or live model-quality claim was verified or changed here.
 
 Commit: resolve through Git history for this path.
+
+## 2026-10-15 — Explain hosted offline verification
+
+The README now identifies the Ubuntu/Windows and Node 22/24 matrix, its dependency install/test/CLI/audit gates, and the boundary between offline mock output and provider quality. Existing source-onboarding guidance is preserved. Workflow authoring and local proof do not certify a hosted run; exact-head GitHub results remain required. See [the CI history](../ci/verify.md).

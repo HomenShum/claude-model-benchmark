@@ -245,3 +245,10 @@ If you're using [nodebench-mcp](https://www.npmjs.com/package/nodebench-mcp), be
 ## License
 
 MIT
+
+
+## Continuous integration
+
+[Offline verification](.github/workflows/verify.yml) runs for pull requests and pushes to `master` on Ubuntu 24.04 and Windows 2025 with Node 22 and 24. It installs the locked dependencies, runs `npm test` (including the build), checks CLI help and mock dry-run, and runs `npm audit --audit-level=low`. It does not request provider credentials, publish a package, or deploy an app. GitHub supplies its normal read-only workflow token.
+
+These checks cover source and offline behavior; they do not measure live model quality. Read the [CI history](CHANGELOG/ci/verify.md) for the initial proof and its limits.

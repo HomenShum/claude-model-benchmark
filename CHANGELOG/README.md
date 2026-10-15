@@ -6,3 +6,5 @@ Append future entries to the surface they change. Use the [entry template](TEMPL
 - [Build and test workflow](build/tooling.md)
 - [Test suite](tests/index.md)
 - [README](docs/readme.md)
+
+- [Offline CI](ci/verify.md)
