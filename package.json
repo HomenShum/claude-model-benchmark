@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "node --test src/__tests__/index.test.mjs",
+    "test": "npm run build && node --test src/__tests__/index.test.mjs",
     "dry-run": "node dist/index.js dry-run",
     "demo": "node dist/index.js demo",
     "providers": "node dist/index.js providers"

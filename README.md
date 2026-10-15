@@ -189,6 +189,27 @@ console.log(model); // { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5", pr
 | Gemini 3 Flash | Google | `gemini-3-flash-preview` | $0.00 | $0.00 |
 | Gemini 3 Pro | Google | `gemini-3-pro-preview` | $0.00125 | $0.01 |
 
+## Develop from source
+
+From a clean checkout with Node.js and npm installed:
+
+```bash
+npm ci
+npm test
+node dist/index.js --help
+node dist/index.js dry-run
+```
+
+`npm test` compiles the current TypeScript source before running the tests, so a
+fresh checkout does not need an existing `dist/` directory. The help and dry-run
+commands need no provider keys. Dry-run output uses mock data; it is not a live
+model benchmark or evidence of model quality.
+
+Importing the package's public API does not run a CLI command or interpret the
+host application's arguments. The CLI runs when `dist/index.js` is executed
+directly. See the [entry-point history](CHANGELOG/scripts/cli.md) and
+[test workflow history](CHANGELOG/build/tooling.md) for this boundary.
+
 ## Tests
 
 ```bash
